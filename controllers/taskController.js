@@ -1,20 +1,34 @@
-import { Task } from '../models/index.js';
+import { Task, User } from '../models/index.js';
 import { aggregateRecommendation, suggestForTask } from '../services/priorityService.js';
 
+const userInclude = {
+  model: User,
+  as: 'user',
+  attributes: ['id', 'email', 'name'],
+};
+
 function serializeTask(task) {
-  const plain = task.toJSON ? task.toJSON() : task;
+  const plain = task.toJSON ? task.toJSON() : { ...task };
+  const userRow = plain.user;
+  delete plain.user;
   const { suggestedPriority, insight } = suggestForTask(plain);
+  const owner = userRow
+    ? { id: userRow.id, email: userRow.email, name: userRow.name }
+    : plain.userId != null
+      ? { id: plain.userId }
+      : null;
   return {
     ...plain,
     suggestedPriority,
     insight,
+    owner,
   };
 }
 
 export async function listTasks(req, res) {
   try {
     const tasks = await Task.findAll({
-      where: { userId: req.userId },
+      include: [userInclude],
       order: [
         ['completed', 'ASC'],
         ['dueDate', 'ASC'],
@@ -23,7 +37,8 @@ export async function listTasks(req, res) {
     });
 
     const enriched = tasks.map(serializeTask);
-    const recommendation = aggregateRecommendation(enriched);
+    const mine = enriched.filter((t) => t.userId === req.userId);
+    const recommendation = aggregateRecommendation(mine);
 
     return res.json({ tasks: enriched, recommendation });
   } catch (err) {
@@ -50,6 +65,7 @@ export async function createTask(req, res) {
       completed: Boolean(completed),
     });
 
+    await task.reload({ include: [userInclude] });
     return res.status(201).json(serializeTask(task));
   } catch (err) {
     console.error(err);
@@ -91,6 +107,7 @@ export async function updateTask(req, res) {
     }
 
     await task.save();
+    await task.reload({ include: [userInclude] });
     return res.json(serializeTask(task));
   } catch (err) {
     console.error(err);
